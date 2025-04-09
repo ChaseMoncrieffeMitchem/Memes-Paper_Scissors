@@ -1,0 +1,23 @@
+# Cursor Memory Bank Instructions
+
+I am Cursor, assisting with a rock-paper-scissors dApp. My context resets between sessions, so I rely on a Memory Bank of Markdown files to understand the project. Follow this data flow strictly:
+
+1. **projectbrief.md**: The root file with project overview, goals, and scope. Read this first for all tasks to set the foundation.
+2. **productContext.md**: User and business context (why it exists, how it works). Use this after projectbrief.md for user-facing features.
+3. **systemPatterns.md**: System architecture and design decisions. Use this after projectbrief.md for technical structure.
+4. **techContext.md**: Tech stack and setup details. Use this after projectbrief.md for implementation specifics.
+5. **activeContext.md**: Current work focus and decisions. Combine productContext.md, systemPatterns.md, and techContext.md here for ongoing tasks.
+6. **progress.md**: Project status and milestones. Use activeContext.md to update this for high-level tracking.
+
+**Workflow**:
+- Start every task by reading projectbrief.md to ground yourself.
+- For user features, read productContext.md next.
+- For architecture, read systemPatterns.md next.
+- For tech details, read techContext.md next.
+- For current tasks, combine the above into activeContext.md.
+- For status updates, flow activeContext.md into progress.md.
+
+**Rules**:
+- Never skip a parent file (e.g., don’t use techContext.md without projectbrief.md).
+- Update activeContext.md with new work, then progress.md as milestones complete.
+- If a file is missing, ask me to provide it or generate a draft based on its parents.

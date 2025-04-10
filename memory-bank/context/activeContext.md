@@ -1,38 +1,40 @@
 # activeContext.md
 
 ## Current Work Focus
-Converting core game logic to a focused MVP on Fuji testnet:
-- **MVP Scope**: Single-chain game, AVAX payouts, mock randomness, Next.js frontend
+MVP on Fuji testnet - Core Functionality Complete:
+- **Completed**: Single-chain game, AVAX payouts, mock randomness, Next.js frontend
+- **Next Phase**: Chainlink VRF integration
 - **Deferred Features**: Axelar cross-chain, escrow system, multi-token support
-- **Timeline**: Tests (Day 1), Frontend (Day 2), Chainlink VRF (Day 3), Axelar (Day 4-5), escrow (Week 2)
 
-## Immediate Tasks (Day 1)
-1. **Hardhat Tests**:
-   - Convert gameplay.test.js to Hardhat format
-   - Focus on core game mechanics and AVAX payouts
-   - Test against local hardhat network first
-   - Deploy to Fuji once tests pass
+## Completed Tasks
+1. **Core Contract**:
+   - Implemented and tested RockPaperScissors.sol
+   - Deployed to Fuji testnet
+   - Verified contract
 
-2. **Frontend Setup (Prep)**:
-   - Create Next.js project structure
-   - Install dependencies (ethers, etc.)
-   - Plan basic UI components
+2. **Frontend Implementation**:
+   - Next.js app deployed to Vercel
+   - MetaMask integration working
+   - Game flow tested and functional:
+     - Game creation
+     - Player joining
+     - Move submission
+     - Result display
+     - AVAX payouts
 
-## Next Steps (Day 2)
-1. **Frontend Development**:
-   - Basic game interface
-   - MetaMask connection
-   - Game creation/joining
-   - Move submission
-   - Result display
+## Next Steps (Day 3)
+1. **Chainlink VRF Integration**:
+   - Replace mock randomness
+   - Update contract for VRF
+   - Test VRF integration
 
 ## Active Decisions
-- **Randomness**: Using block.timestamp for MVP; Chainlink VRF planned for Day 3
-- **Token Support**: AVAX only for MVP; multi-token support deferred
-- **Testing Priority**: Local Hardhat tests first, then Fuji deployment
-- **Frontend Focus**: Essential gameplay UI before advanced features
+- **Randomness**: Currently using block.timestamp; ready for VRF upgrade
+- **Token Support**: AVAX-only implementation successful
+- **Infrastructure**: Vercel deployment complete
+- **Testing**: Contract and frontend integration verified
 
 ## Technical Patterns
-- **Testing**: Hardhat native testing with ethers
-- **Frontend**: Next.js + ethers for Web3 interaction
-- **Contract**: Single-chain focus with upgrade path to cross-chain
+- **Contract**: Functional on Fuji
+- **Frontend**: Next.js + ethers successful
+- **Deployment**: Vercel production environment

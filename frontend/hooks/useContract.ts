@@ -2,7 +2,7 @@ import { ethers, Eip1193Provider } from "ethers";
 import RockPaperScissorsABI from "../src/abi/RockPaperScissors.json";
 import { useCallback } from "react";
 
-const CONTRACT_ADDRESS = "0x33e080070a7846cBc63D52cdD68df472492cb778";
+const CONTRACT_ADDRESS = "0x6408CfE6fc5085130E8fC9db38F1f618DF3ffEEd";
 const ABI = RockPaperScissorsABI.abi;
 
 declare global {

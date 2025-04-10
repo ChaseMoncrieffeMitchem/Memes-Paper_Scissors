@@ -1,16 +1,14 @@
 import { ethers } from "hardhat";
 
 async function main() {
-  // Get the contract factory
+  const subscriptionId = "58637910779827876803596604279324847032578563370178762987567537698610436648405";
+  
   const RockPaperScissors = await ethers.getContractFactory("RockPaperScissors");
+  // Pass subscriptionId as the argument, followed by an empty overrides object
+  const rps = await RockPaperScissors.deploy(subscriptionId);
+  await rps.waitForDeployment();
   
-  // Deploy the contract and wait for the transaction to be mined
-  const rps = await RockPaperScissors.deploy();
-  await rps.waitForDeployment(); // Replaces .deployed()
-  
-  // Get the deployed contract address
-  const address = await rps.getAddress(); // Replaces .address
-  
+  const address = await rps.getAddress();
   console.log("Contract deployed to:", address);
 }
 

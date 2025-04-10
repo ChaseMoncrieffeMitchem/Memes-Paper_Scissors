@@ -3,152 +3,151 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 
-contract RockPaperScissors is ReentrancyGuard, Ownable {
-    enum Move { NONE, ROCK, PAPER, SCISSORS }
-    enum GameStatus { PENDING, COMPLETED, TIED }
+interface LinkTokenInterface {
+    function transfer(address to, uint256 value) external returns (bool);
+    function balanceOf(address owner) external view returns (uint256);
+}
+
+interface VRFCoordinatorV2Interface {
+    function requestRandomWords(
+        bytes32 keyHash,
+        uint256 s_subscriptionId,
+        uint16 requestConfirmations,
+        uint32 callbackGasLimit,
+        uint32 numWords
+    ) external returns (uint256 requestId);
+}
+
+contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
+    VRFCoordinatorV2Interface COORDINATOR;
+
+    address vrfCoordinator = 0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE;
+    address linkToken = 0x0b9d5D9136855f6FEc3c0993feE6E9CE8a297846;
+    uint256 subscriptionId;
+    bytes32 keyHash = 0xc799bd1e3bd4d1a41cd4968997a4e03dfd2a3c7c04b695881138580163f42887;
+
+    uint256 public constant WAGER_AMOUNT = 0.0000001 ether;
+    uint256 public constant PAYOUT_AMOUNT = 0.0000002 ether;
+
+    enum Move { None, Rock, Paper, Scissors }
+    enum GameState { Pending, MovesSubmitted, Resolved }
 
     struct Game {
         address player1;
         address player2;
-        Move player1Move;
-        Move player2Move;
-        uint256 wagerAmount;
-        GameStatus status;
-        uint256 timestamp;
+        Move move1;
+        Move move2;
+        GameState state;
+        uint256 randomRequestId;
     }
 
-    // Game storage
     mapping(uint256 => Game) public games;
-    uint256 public gameCount;
-    
-    // Player stats
     mapping(address => uint256) public gamesWon;
     mapping(address => uint256) public gamesPlayed;
+    uint256 public gameCounter;
 
-    // Events matching the GameBuilder pattern
-    event GameCreated(uint256 indexed gameId, address indexed player1, uint256 wagerAmount);
-    event MoveMade(uint256 indexed gameId, address indexed player, Move move);
-    event GameResolved(
-        uint256 indexed gameId, 
-        address indexed winner,
-        uint256 stakeAmount,
-        Move player1Move,
-        Move player2Move
-    );
+    mapping(uint256 => uint256) public requestIdToGameId;
 
-    constructor() Ownable(msg.sender) {}
+    event GameCreated(uint256 gameId, address player1);
+    event PlayerJoined(uint256 gameId, address player2);
+    event MovesSubmitted(uint256 gameId);
+    event GameResolved(uint256 gameId, address winner);
 
-    function createGame() external payable returns (uint256) {
-        require(msg.value > 0, "Must send AVAX to create game");
-
-        uint256 gameId = gameCount++;
-        games[gameId] = Game({
-            player1: msg.sender,
-            player2: address(0),
-            player1Move: Move.NONE,
-            player2Move: Move.NONE,
-            wagerAmount: msg.value,
-            status: GameStatus.PENDING,
-            timestamp: block.timestamp
-        });
-
-        emit GameCreated(gameId, msg.sender, msg.value);
-        return gameId;
+    constructor(uint256 _subscriptionId) VRFConsumerBaseV2(vrfCoordinator) Ownable(msg.sender) {
+        COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
+        subscriptionId = _subscriptionId;
     }
 
-    function joinGame(uint256 gameId) external payable {
+    function createGame() external payable nonReentrant {
+        require(msg.value == WAGER_AMOUNT, "Incorrect wager amount");
+        gameCounter++;
+        games[gameCounter] = Game(msg.sender, address(0), Move.None, Move.None, GameState.Pending, 0);
+        gamesPlayed[msg.sender]++;
+        emit GameCreated(gameCounter, msg.sender);
+    }
+
+    function joinGame(uint256 gameId) external payable nonReentrant {
         Game storage game = games[gameId];
-        require(game.player1 != address(0), "Game doesn't exist");
-        require(game.player2 == address(0), "Game already full");
-        require(msg.value == game.wagerAmount, "Must match wager amount");
-        require(msg.sender != game.player1, "Cannot play against yourself");
+        require(msg.value == WAGER_AMOUNT, "Incorrect wager amount");
+        require(game.state == GameState.Pending, "Game not pending");
+        require(game.player1 != address(0) && game.player2 == address(0), "Invalid game state");
+        require(game.player1 != msg.sender, "Cannot join own game");
 
         game.player2 = msg.sender;
+        gamesPlayed[msg.sender]++;
+        emit PlayerJoined(gameId, msg.sender);
     }
 
-    function makeMove(uint256 gameId, uint8 move) external {
-        require(move > uint8(Move.NONE) && move <= uint8(Move.SCISSORS), "Invalid move");
-        Move playerMove = Move(move); // Cast to enum after validation
+    function makeMove(uint256 gameId, Move move_) external nonReentrant {
         Game storage game = games[gameId];
-        require(game.status == GameStatus.PENDING, "Game not pending");
-        require(msg.sender == game.player1 || msg.sender == game.player2, "Not your game");
+        require(move_ >= Move.Rock && move_ <= Move.Scissors, "Invalid move");
+        require(game.state == GameState.Pending, "Moves already submitted");
+        require(msg.sender == game.player1 || msg.sender == game.player2, "Not a player");
 
         if (msg.sender == game.player1) {
-        require(game.player1Move == Move.NONE, "Move already made");
-        game.player1Move = playerMove;
+            require(game.move1 == Move.None, "Move already made");
+            game.move1 = move_;
         } else {
-        require(game.player2Move == Move.NONE, "Move already made");
-        game.player2Move = playerMove;
+            require(game.move2 == Move.None, "Move already made");
+            game.move2 = move_;
         }
 
-        emit MoveMade(gameId, msg.sender, playerMove);
-
-        // If both moves made, resolve the game
-        if (game.player1Move != Move.NONE && game.player2Move != Move.NONE) {
-        _resolveGame(gameId);
+        if (game.move1 != Move.None && game.move2 != Move.None) {
+            game.state = GameState.MovesSubmitted;
+            requestRandomness(gameId);
+            emit MovesSubmitted(gameId);
         }
+    }
+
+    function requestRandomness(uint256 gameId) internal {
+        uint256 requestId = COORDINATOR.requestRandomWords(
+            keyHash,
+            subscriptionId,
+            3, // Request confirmations
+            100000, // Callback gas limit
+            1 // Number of random words
+        );
+        requestIdToGameId[requestId] = gameId;
+        games[gameId].randomRequestId = requestId;
+    }
+
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+    uint256 gameId = requestIdToGameId[requestId];
+    Game storage game = games[gameId];
+    require(game.state == GameState.MovesSubmitted, "Game not ready for resolution");
+
+    resolveGame(gameId);
 }
 
-    function _resolveGame(uint256 gameId) private {
+    function resolveGame(uint256 gameId) internal {
         Game storage game = games[gameId];
-    
-        // Update played stats
-        gamesPlayed[game.player1]++;
-        gamesPlayed[game.player2]++;
+        game.state = GameState.Resolved;
 
-        // Determine winner
-        address winner;
-        uint256 payout;
-
-        if (game.player1Move == game.player2Move) {
-        game.status = GameStatus.TIED;
-        winner = address(0); // No winner in a tie
-        payout = 0;
-        // Refund both players
-        (bool sent1, ) = game.player1.call{value: game.wagerAmount}("");
-        require(sent1, "Failed to refund player1");
-        (bool sent2, ) = game.player2.call{value: game.wagerAmount}("");
-        require(sent2, "Failed to refund player2");
+        address winner = determineWinner(game.move1, game.move2, game.player1, game.player2);
+        if (winner == address(0)) {
+            payable(game.player1).transfer(WAGER_AMOUNT);
+            payable(game.player2).transfer(WAGER_AMOUNT);
         } else {
-        game.status = GameStatus.COMPLETED;
-        winner = _determineWinner(game.player1Move, game.player2Move) == game.player1Move 
-            ? game.player1 
-            : game.player2;
-        gamesWon[winner]++;
-        payout = game.wagerAmount * 2;
-        (bool sent, ) = winner.call{value: payout}("");
-        require(sent, "Failed to send AVAX");
-    }
-
-        emit GameResolved(
-        gameId,
-        winner,
-        payout,
-        game.player1Move,
-        game.player2Move
-    );
-}
-
-    function _determineWinner(Move move1, Move move2) private pure returns (Move) {
-        if (move1 == move2) return move1;
-        
-        if (
-            (move1 == Move.ROCK && move2 == Move.SCISSORS) ||
-            (move1 == Move.PAPER && move2 == Move.ROCK) ||
-            (move1 == Move.SCISSORS && move2 == Move.PAPER)
-        ) {
-            return move1;
+            payable(winner).transfer(PAYOUT_AMOUNT);
+            gamesWon[winner]++;
         }
-        return move2;
+        emit GameResolved(gameId, winner);
     }
 
-    // View functions
-    function getGame(uint256 gameId) external view returns (Game memory) {
-        return games[gameId];
+    function determineWinner(Move move1, Move move2, address player1, address player2) internal pure returns (address) {
+        if (move1 == move2) return address(0); // Tie
+        if ((move1 == Move.Rock && move2 == Move.Scissors) ||
+            (move1 == Move.Paper && move2 == Move.Rock) ||
+            (move1 == Move.Scissors && move2 == Move.Paper)) {
+            return player1; // Player 1 wins
+        }
+        return player2; // Player 2 wins
     }
 
-    function getPlayerStats(address player) external view returns (uint256 won, uint256 played) {
-        return (gamesWon[player], gamesPlayed[player]);
+    function withdrawLink() external onlyOwner {
+        LinkTokenInterface link = LinkTokenInterface(linkToken);
+        require(link.transfer(msg.sender, link.balanceOf(address(this))), "Unable to transfer");
     }
-} 
+}

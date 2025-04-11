@@ -148,63 +148,47 @@ export default function Home(): JSX.Element {
 
   useEffect(() => {
     if (!contract || !gameId) return;
-
+  
     const fetchGameState = async () => {
-      try {
-        const game: Game = await contract.getGame(gameId);
-        console.log("Polled Game state:", {
-          player1: game.player1,
-          player2: game.player2,
-          move1: game.move1.toString(),
-          move2: game.move2.toString(),
-          state: game.state.toString(),
-          randomRequestId: game.randomRequestId.toString()
-        });
-        const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
-        const stateStr = game.state.toString();
-        setGameStatus(statusMap[Number(stateStr)]);
-        setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
-
-        if (stateStr === "2") { // Compare as string
-          console.log("Game resolved, setting result...");
-          const player1Move = Number(game.move1);
-          const player2Move = Number(game.move2);
-          let winner = ethers.ZeroAddress;
-
-          if (player1Move !== player2Move) {
-            if (
-              (player1Move === 1 && player2Move === 3) ||
-              (player1Move === 2 && player2Move === 1) ||
-              (player1Move === 3 && player2Move === 2)
-            ) {
-              winner = game.player1;
-            } else {
-              winner = game.player2;
-            }
+      const game: Game = await contract.getGame(gameId);
+      const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
+      setGameStatus(statusMap[Number(game.state)]);
+      setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
+  
+      if (game.state.toString() === "2") {
+        const player1Move = Number(game.move1);
+        const player2Move = Number(game.move2);
+        let winner = ethers.ZeroAddress;
+        if (player1Move !== player2Move) {
+          if (
+            (player1Move === 1 && player2Move === 3) ||
+            (player1Move === 2 && player2Move === 1) ||
+            (player1Move === 3 && player2Move === 2)
+          ) {
+            winner = game.player1;
+          } else {
+            winner = game.player2;
           }
-          const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
-          const newResult = {
-            winner,
-            payout,
-            player1Move,
-            player2Move,
-          };
-          setGameResult(newResult);
-          console.log("GameResult set:", newResult);
         }
-      } catch (error) {
-        console.error("Error polling game state:", error);
+        const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
+        setGameResult({ winner, payout, player1Move, player2Move });
       }
     };
-
+  
     fetchGameState();
-    const interval = setInterval(() => {
-      console.log("Polling for gameId:", gameId);
-      fetchGameState();
-    }, 5000);
-
+  
+    contract.on("MovesSubmitted", (eventGameId: bigint) => {
+      if (eventGameId.toString() === gameId) fetchGameState();
+    });
+  
+    contract.on("GameResolved", (eventGameId: bigint) => {
+      if (eventGameId.toString() === gameId) fetchGameState();
+    });
+  
+    const interval = setInterval(fetchGameState, 10000);
+  
     return () => {
-      console.log("Cleaning up polling for gameId:", gameId);
+      contract.removeAllListeners();
       clearInterval(interval);
     };
   }, [contract, gameId]);

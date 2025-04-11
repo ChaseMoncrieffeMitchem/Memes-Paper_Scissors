@@ -81,26 +81,25 @@ contract RockPaperScissors is ReentrancyGuard, VRFConsumerBaseV2Plus {
     }
 
     function makeMove(uint256 gameId, Move move_) external nonReentrant {
-        Game storage game = games[gameId];
-        require(game.player1 != address(0), "Game does not exist");
-        require(move_ >= Move.Rock && move_ <= Move.Scissors, "Invalid move");
-        require(game.state == GameState.Pending, "Game not in Pending state");
-        require(msg.sender == game.player1 || msg.sender == game.player2, "Not a player");
-
-        if (msg.sender == game.player1) {
-            require(game.move1 == Move.None, "Player 1 move already made");
-            game.move1 = move_;
-        } else {
-            require(game.move2 == Move.None, "Player 2 move already made");
-            game.move2 = move_;
-        }
-
-        if (game.move1 != Move.None && game.move2 != Move.None) {
+    Game storage game = games[gameId];
+    require(move_ >= Move.Rock && move_ <= Move.Scissors, "Invalid move");
+    require(game.state == GameState.Pending, "Game not pending");
+    
+    bool isPlayer1 = msg.sender == game.player1;
+    require(isPlayer1 || msg.sender == game.player2, "Not a player");
+    require((isPlayer1 && game.move1 == Move.None) || (!isPlayer1 && game.move2 == Move.None), "Move already made");
+    
+    if (isPlayer1) {
+        game.move1 = move_;
+    } else {
+        game.move2 = move_;
+        if (game.move1 != Move.None) {
             game.state = GameState.MovesSubmitted;
             requestRandomness(gameId);
             emit MovesSubmitted(gameId);
         }
     }
+}
 
     function requestRandomness(uint256 gameId) internal {
         uint256 requestId = s_vrfCoordinator.requestRandomWords(
@@ -165,5 +164,28 @@ contract RockPaperScissors is ReentrancyGuard, VRFConsumerBaseV2Plus {
     ) {
         Game storage game = games[gameId];
         return (game.player1, game.player2, game.move1, game.move2, game.state, game.randomRequestId);
+    }
+
+    function getGameHistory(address player, uint256 startId, uint256 limit) 
+        external 
+        view 
+        returns (Game[] memory) 
+{
+    require(limit <= 50, "Limit too high");
+    Game[] memory playerGames = new Game[](limit);
+    uint256 count = 0;
+    
+    for (uint256 i = startId; i <= gameCounter && count < limit; i++) {
+        Game memory game = games[i];
+        if (game.player1 == player || game.player2 == player) {
+                playerGames[count] = game;
+                count++;
+            }
+        }
+        
+    assembly {
+            mstore(playerGames, count)
+        }
+        return playerGames;
     }
 }

@@ -110,11 +110,10 @@ import { Contract, ethers } from "ethers";
 interface Game {
   player1: string;
   player2: string;
-  player1Move: number;
-  player2Move: number;
-  wagerAmount: string;
-  status: number;
-  timestamp: string;
+  move1: number;
+  move2: number;
+  state: number;
+  randomRequestId: string;
 }
 
 interface GameResult {
@@ -138,158 +137,165 @@ export default function Home(): JSX.Element {
     const initContract = async () => {
       const contractInstance: Contract = await getContract();
       setContract(contractInstance);
-      // Get the current player's address
       if (!window.ethereum) throw new Error("No ethereum provider found");
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       setCurrentPlayer(address);
     };
-    initContract();
+    initContract().catch(console.error);
   }, [getContract]);
 
   useEffect(() => {
-    const fetchGameStatus = async () => {
-      if (!contract || !gameId) return;
+    if (!contract || !gameId) return;
+
+    const fetchGameState = async () => {
       try {
-        console.log("Fetching game state for gameId:", gameId);
         const game: Game = await contract.getGame(gameId);
-        console.log("Game state:", game);
-        const statusMap = ["Pending", "Completed", "Tied"];
-        setGameStatus(statusMap[game.status]);
+        console.log("Polled Game state:", {
+          player1: game.player1,
+          player2: game.player2,
+          move1: game.move1.toString(),
+          move2: game.move2.toString(),
+          state: game.state.toString(),
+          randomRequestId: game.randomRequestId.toString()
+        });
+        const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
+        const stateStr = game.state.toString();
+        setGameStatus(statusMap[Number(stateStr)]);
         setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
 
-        if (game.status !== 0) {
-          console.log("Raw moves from contract:", {
-            player1Move: game.player1Move,
-            player2Move: game.player2Move,
-          });
-
-          const player1Move = Number(game.player1Move);
-          const player2Move = Number(game.player2Move);
-
-          console.log("Converted moves:", { player1Move, player2Move });
-
+        if (stateStr === "2") { // Compare as string
+          console.log("Game resolved, setting result...");
+          const player1Move = Number(game.move1);
+          const player2Move = Number(game.move2);
           let winner = ethers.ZeroAddress;
+
           if (player1Move !== player2Move) {
             if (
-              (player1Move === 1 && player2Move === 3) || // Rock beats Scissors
-              (player1Move === 2 && player2Move === 1) || // Paper beats Rock
-              (player1Move === 3 && player2Move === 2)    // Scissors beats Paper
+              (player1Move === 1 && player2Move === 3) ||
+              (player1Move === 2 && player2Move === 1) ||
+              (player1Move === 3 && player2Move === 2)
             ) {
               winner = game.player1;
             } else {
               winner = game.player2;
             }
           }
-          const payout = game.status === 2 ? "0" : (parseFloat(ethers.formatEther(game.wagerAmount.toString())) * 2).toString();
-          setGameResult({
+          const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
+          const newResult = {
             winner,
             payout,
             player1Move,
             player2Move,
-          });
+          };
+          setGameResult(newResult);
+          console.log("GameResult set:", newResult);
         }
       } catch (error) {
-        console.error("Error fetching game status:", error);
-        setGameStatus("Error");
+        console.error("Error polling game state:", error);
       }
     };
 
-    fetchGameStatus();
-
+    fetchGameState();
     const interval = setInterval(() => {
-      fetchGameStatus();
+      console.log("Polling for gameId:", gameId);
+      fetchGameState();
     }, 5000);
 
-    if (contract && gameId) {
-      const listener = (
-        resolvedGameId: string,
-        winner: string,
-        payout: string,
-        player1Move: number,
-        player2Move: number
-      ) => {
-        console.log("GameResolved event received:", { resolvedGameId, winner, payout, player1Move, player2Move });
-        if (resolvedGameId.toString() === gameId) {
-          setGameResult({
-            winner,
-            payout: ethers.formatEther(payout.toString()),
-            player1Move,
-            player2Move,
-          });
-        }
-      };
-      contract.on("GameResolved", listener);
-
-      return () => {
-        contract.off("GameResolved", listener);
-        clearInterval(interval);
-      };
-    }
+    return () => {
+      console.log("Cleaning up polling for gameId:", gameId);
+      clearInterval(interval);
+    };
   }, [contract, gameId]);
 
   const createGame = async () => {
     if (!contract) return;
-    const tx = await contract.createGame({ value: ethers.parseEther("0.0000001") });
-    const receipt = await tx.wait();
-    const newGameId = receipt.logs[0].args[0].toString();
-    console.log("Created game with ID:", newGameId);
-    setGameId(newGameId);
-    setGameResult(null);
+    try {
+      const tx = await contract.createGame({ value: ethers.parseEther("0.0000001") });
+      const receipt = await tx.wait();
+      const gameCreatedEvent = receipt.logs.find((log: ethers.Log) =>
+        contract.interface.parseLog(log)?.name === "GameCreated"
+      );
+      if (!gameCreatedEvent) throw new Error("GameCreated event not found");
+      const newGameId = gameCreatedEvent.args[0].toString();
+      console.log("Created game with ID:", newGameId);
+      setGameId(newGameId);
+      setGameResult(null);
+      setGameStatus("Pending");
+    } catch (error) {
+      console.error("Error creating game:", error);
+    }
   };
 
   const joinGame = async () => {
     if (!contract || !gameId) return;
     console.log("Joining game with ID:", gameId);
-    const tx = await contract.joinGame(gameId, { value: ethers.parseEther("0.0000001") });
-    await tx.wait();
-    const game: Game = await contract.getGame(gameId);
-    setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
+    try {
+      const tx = await contract.joinGame(gameId, { value: ethers.parseEther("0.0000001") });
+      await tx.wait();
+      setPlayer2Joined(true);
+    } catch (error) {
+      console.error("Error joining game:", error);
+    }
   };
 
   const submitMove = async () => {
     if (!contract || !gameId || !move) return;
     console.log("Submitting move for gameId:", gameId, "move:", move);
-    const tx = await contract.makeMove(gameId, move);
-    await tx.wait();
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const game: Game = await contract.getGame(gameId);
-    console.log("Game state after move:", game);
-    const statusMap = ["Pending", "Completed", "Tied"];
-    setGameStatus(statusMap[game.status]);
-    const updatedGame: Game = await contract.getGame(gameId);
-    if (updatedGame.status !== 0) {
-      const player1Move = Number(updatedGame.player1Move);
-      const player2Move = Number(updatedGame.player2Move);
-      let winner = ethers.ZeroAddress;
-      if (player1Move !== player2Move) {
-        if (
-          (player1Move === 1 && player2Move === 3) ||
-          (player1Move === 2 && player2Move === 1) ||
-          (player1Move === 3 && player2Move === 2)
-        ) {
-          winner = updatedGame.player1;
-        } else {
-          winner = updatedGame.player2;
-        }
-      }
-      const payout = updatedGame.status === 2 ? "0" : (parseFloat(ethers.formatEther(updatedGame.wagerAmount.toString())) * 2).toString();
-      setGameResult({
-        winner,
-        payout,
-        player1Move,
-        player2Move,
+    try {
+      const gameBefore = await contract.getGame(gameId);
+      console.log("Game state before move:", {
+        player1: gameBefore.player1,
+        player2: gameBefore.player2,
+        move1: gameBefore.move1.toString(),
+        move2: gameBefore.move2.toString(),
+        state: gameBefore.state.toString(),
+        randomRequestId: gameBefore.randomRequestId.toString()
       });
+
+      if (gameBefore.state.toString() !== "0") {
+        console.error("Cannot submit move: Game is not Pending");
+        setGameStatus("Error: Game is not Pending");
+        return;
+      }
+      if (
+        gameBefore.player1.toLowerCase() !== currentPlayer?.toLowerCase() &&
+        gameBefore.player2.toLowerCase() !== currentPlayer?.toLowerCase()
+      ) {
+        console.error("Cannot submit move: You are not a player");
+        setGameStatus("Error: You are not a player");
+        return;
+      }
+      if (
+        gameBefore.player2.toLowerCase() === currentPlayer?.toLowerCase() &&
+        gameBefore.move2.toString() !== "0"
+      ) {
+        console.error("Cannot submit move: Player 2 already submitted a move");
+        setGameStatus("Error: Move already submitted");
+        return;
+      }
+
+      const tx = await contract.makeMove(gameId, move, { gasLimit: 200000 });
+      console.log("Transaction sent:", tx.hash);
+      await tx.wait();
+      console.log("Transaction confirmed");
+    } catch (error) {
+      console.error("Error submitting move:", error);
+      setGameStatus("Error submitting move");
     }
   };
 
   const refreshGameStatus = async () => {
     if (!contract || !gameId) return;
-    const game: Game = await contract.getGame(gameId);
-    const statusMap = ["Pending", "Completed", "Tied"];
-    setGameStatus(statusMap[game.status]);
-    setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
+    try {
+      const game: Game = await contract.getGame(gameId);
+      const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
+      setGameStatus(statusMap[game.state]);
+      setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
+    } catch (error) {
+      console.error("Error refreshing game status:", error);
+    }
   };
 
   const moveToString = (move: number) => {
@@ -320,10 +326,12 @@ export default function Home(): JSX.Element {
           >
             Refresh Game Status
           </button>
-          {gameResult && gameStatus !== "Pending" && (
+          {gameResult && gameStatus === "Resolved" && (
             <div className="mt-4">
               <p>
-                Result: {gameResult.winner === ethers.ZeroAddress ? "Tie" : (isWinner() ? `Winner: ${gameResult.winner}` : "Loser")}
+                Result: {gameResult.winner === ethers.ZeroAddress
+                  ? "Tie"
+                  : `Winner: ${gameResult.winner}${isWinner() ? " (You)" : ""}`}
               </p>
               {gameResult.winner !== ethers.ZeroAddress && (
                 <p>Payout: {isWinner() ? `${gameResult.payout} AVAX` : "None"}</p>

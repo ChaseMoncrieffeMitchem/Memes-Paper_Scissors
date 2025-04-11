@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
+import "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
 
 interface LinkTokenInterface {
     function transfer(address to, uint256 value) external returns (bool);
@@ -20,7 +20,7 @@ interface VRFCoordinatorV2Interface {
     ) external returns (uint256 requestId);
 }
 
-contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
+contract RockPaperScissors is ReentrancyGuard, VRFConsumerBaseV2Plus {
     VRFCoordinatorV2Interface COORDINATOR;
 
     address vrfCoordinator = 0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE;
@@ -55,7 +55,7 @@ contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
     event MovesSubmitted(uint256 gameId);
     event GameResolved(uint256 gameId, address winner);
 
-    constructor(uint256 _subscriptionId) VRFConsumerBaseV2(vrfCoordinator) Ownable(msg.sender) {
+    constructor(uint256 _subscriptionId) VRFConsumerBaseV2Plus(vrfCoordinator) {
         COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
         subscriptionId = _subscriptionId;
     }
@@ -82,15 +82,16 @@ contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
 
     function makeMove(uint256 gameId, Move move_) external nonReentrant {
         Game storage game = games[gameId];
+        require(game.player1 != address(0), "Game does not exist");
         require(move_ >= Move.Rock && move_ <= Move.Scissors, "Invalid move");
-        require(game.state == GameState.Pending, "Moves already submitted");
+        require(game.state == GameState.Pending, "Game not in Pending state");
         require(msg.sender == game.player1 || msg.sender == game.player2, "Not a player");
 
         if (msg.sender == game.player1) {
-            require(game.move1 == Move.None, "Move already made");
+            require(game.move1 == Move.None, "Player 1 move already made");
             game.move1 = move_;
         } else {
-            require(game.move2 == Move.None, "Move already made");
+            require(game.move2 == Move.None, "Player 2 move already made");
             game.move2 = move_;
         }
 
@@ -102,24 +103,27 @@ contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
     }
 
     function requestRandomness(uint256 gameId) internal {
-        uint256 requestId = COORDINATOR.requestRandomWords(
-            keyHash,
-            subscriptionId,
-            3, // Request confirmations
-            100000, // Callback gas limit
-            1 // Number of random words
+        uint256 requestId = s_vrfCoordinator.requestRandomWords(
+            VRFV2PlusClient.RandomWordsRequest({
+                keyHash: keyHash,
+                subId: subscriptionId,
+                requestConfirmations: 3,
+                callbackGasLimit: 100000,
+                numWords: 1,
+                extraArgs: ""
+            })
         );
         requestIdToGameId[requestId] = gameId;
         games[gameId].randomRequestId = requestId;
     }
 
-    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
-    uint256 gameId = requestIdToGameId[requestId];
-    Game storage game = games[gameId];
-    require(game.state == GameState.MovesSubmitted, "Game not ready for resolution");
+    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
+        uint256 gameId = requestIdToGameId[requestId];
+        Game storage game = games[gameId];
+        require(game.state == GameState.MovesSubmitted, "Game not ready for resolution");
 
-    resolveGame(gameId);
-}
+        resolveGame(gameId);
+    }
 
     function resolveGame(uint256 gameId) internal {
         Game storage game = games[gameId];
@@ -149,5 +153,17 @@ contract RockPaperScissors is ReentrancyGuard, Ownable, VRFConsumerBaseV2 {
     function withdrawLink() external onlyOwner {
         LinkTokenInterface link = LinkTokenInterface(linkToken);
         require(link.transfer(msg.sender, link.balanceOf(address(this))), "Unable to transfer");
+    }
+
+    function getGame(uint256 gameId) external view returns (
+        address player1,
+        address player2,
+        Move move1,
+        Move move2,
+        GameState state,
+        uint256 randomRequestId
+    ) {
+        Game storage game = games[gameId];
+        return (game.player1, game.player2, game.move1, game.move2, game.state, game.randomRequestId);
     }
 }

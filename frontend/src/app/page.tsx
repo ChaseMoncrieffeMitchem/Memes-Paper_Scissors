@@ -131,62 +131,73 @@ export default function Home(): JSX.Element {
   const [player2Joined, setPlayer2Joined] = useState<boolean>(false);
   const [gameResult, setGameResult] = useState<GameResult | null>(null);
   const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>(""); // New error state
   const { getContract } = useContract();
 
   useEffect(() => {
     const initContract = async () => {
-      const contractInstance: Contract = await getContract();
-      setContract(contractInstance);
-      if (!window.ethereum) throw new Error("No ethereum provider found");
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
-      const address = await signer.getAddress();
-      setCurrentPlayer(address);
+      try {
+        if (!window.ethereum) throw new Error("MetaMask not installed");
+        const contractInstance: Contract = await getContract();
+        setContract(contractInstance);
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        const address = await signer.getAddress();
+        setCurrentPlayer(address);
+        setErrorMessage(""); // Clear error on success
+      } catch (error: Error | unknown) {
+        setErrorMessage(error instanceof Error ? error.message : "Failed to initialize contract");
+      }
     };
-    initContract().catch(console.error);
+    initContract();
   }, [getContract]);
 
   useEffect(() => {
     if (!contract || !gameId) return;
-  
+
     const fetchGameState = async () => {
-      const game: Game = await contract.getGame(gameId);
-      const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
-      setGameStatus(statusMap[Number(game.state)]);
-      setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
-  
-      if (game.state.toString() === "2") {
-        const player1Move = Number(game.move1);
-        const player2Move = Number(game.move2);
-        let winner = ethers.ZeroAddress;
-        if (player1Move !== player2Move) {
-          if (
-            (player1Move === 1 && player2Move === 3) ||
-            (player1Move === 2 && player2Move === 1) ||
-            (player1Move === 3 && player2Move === 2)
-          ) {
-            winner = game.player1;
-          } else {
-            winner = game.player2;
+      try {
+        const game: Game = await contract.getGame(gameId);
+        const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
+        setGameStatus(statusMap[Number(game.state)]);
+        setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
+
+        if (game.state.toString() === "2") {
+          const player1Move = Number(game.move1);
+          const player2Move = Number(game.move2);
+          let winner = ethers.ZeroAddress;
+          if (player1Move !== player2Move) {
+            if (
+              (player1Move === 1 && player2Move === 3) ||
+              (player1Move === 2 && player2Move === 1) ||
+              (player1Move === 3 && player2Move === 2)
+            ) {
+              winner = game.player1;
+            } else {
+              winner = game.player2;
+            }
           }
+          const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
+          setGameResult({ winner, payout, player1Move, player2Move });
         }
-        const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
-        setGameResult({ winner, payout, player1Move, player2Move });
+        setErrorMessage(""); // Clear error on success
+      } catch (error: Error | unknown) {
+        setErrorMessage(error instanceof Error ? error.message : "Failed to fetch game state");
       }
     };
-  
+
     fetchGameState();
-  
+
     contract.on("MovesSubmitted", (eventGameId: bigint) => {
       if (eventGameId.toString() === gameId) fetchGameState();
     });
-  
+
     contract.on("GameResolved", (eventGameId: bigint) => {
       if (eventGameId.toString() === gameId) fetchGameState();
     });
-  
+
     const interval = setInterval(fetchGameState, 10000);
-  
+
     return () => {
       contract.removeAllListeners();
       clearInterval(interval);
@@ -194,91 +205,113 @@ export default function Home(): JSX.Element {
   }, [contract, gameId]);
 
   const createGame = async () => {
-    if (!contract) return;
+    if (!contract) {
+      setErrorMessage("Contract not initialized");
+      return;
+    }
     try {
-      const tx = await contract.createGame({ value: ethers.parseEther("0.0000001") });
+      const tx = await contract.createGame({
+        value: ethers.parseEther("0.0000001"),
+        gasLimit: 200000,
+      });
       const receipt = await tx.wait();
       const gameCreatedEvent = receipt.logs.find((log: ethers.Log) =>
         contract.interface.parseLog(log)?.name === "GameCreated"
       );
       if (!gameCreatedEvent) throw new Error("GameCreated event not found");
       const newGameId = gameCreatedEvent.args[0].toString();
-      console.log("Created game with ID:", newGameId);
       setGameId(newGameId);
       setGameResult(null);
       setGameStatus("Pending");
-    } catch (error) {
-      console.error("Error creating game:", error);
+      setErrorMessage("");
+    } catch (error: Error | unknown) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to create game");
     }
   };
 
   const joinGame = async () => {
-    if (!contract || !gameId) return;
-    console.log("Joining game with ID:", gameId);
+    if (!contract) {
+      setErrorMessage("Contract not initialized");
+      return;
+    }
+    if (!gameId) {
+      setErrorMessage("Please enter a Game ID");
+      return;
+    }
     try {
-      const tx = await contract.joinGame(gameId, { value: ethers.parseEther("0.0000001") });
+      const tx = await contract.joinGame(gameId, {
+        value: ethers.parseEther("0.0000001"),
+        gasLimit: 200000,
+      });
       await tx.wait();
       setPlayer2Joined(true);
-    } catch (error) {
-      console.error("Error joining game:", error);
+      setErrorMessage("");
+    } catch (error: Error | unknown) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to join game");
     }
   };
 
   const submitMove = async () => {
-    if (!contract || !gameId || !move) return;
-    console.log("Submitting move for gameId:", gameId, "move:", move);
+    if (!contract) {
+      setErrorMessage("Contract not initialized");
+      return;
+    }
+    if (!gameId) {
+      setErrorMessage("Please enter a Game ID");
+      return;
+    }
+    if (!move) {
+      setErrorMessage("Please select a move");
+      return;
+    }
     try {
-      const gameBefore = await contract.getGame(gameId);
-      console.log("Game state before move:", {
-        player1: gameBefore.player1,
-        player2: gameBefore.player2,
-        move1: gameBefore.move1.toString(),
-        move2: gameBefore.move2.toString(),
-        state: gameBefore.state.toString(),
-        randomRequestId: gameBefore.randomRequestId.toString()
-      });
-
+      const gameBefore: Game = await contract.getGame(gameId);
       if (gameBefore.state.toString() !== "0") {
-        console.error("Cannot submit move: Game is not Pending");
-        setGameStatus("Error: Game is not Pending");
-        return;
+        throw new Error("Game is not pending");
       }
       if (
         gameBefore.player1.toLowerCase() !== currentPlayer?.toLowerCase() &&
         gameBefore.player2.toLowerCase() !== currentPlayer?.toLowerCase()
       ) {
-        console.error("Cannot submit move: You are not a player");
-        setGameStatus("Error: You are not a player");
-        return;
+        throw new Error("You are not a player");
+      }
+      if (
+        gameBefore.player1.toLowerCase() === currentPlayer?.toLowerCase() &&
+        gameBefore.move1.toString() !== "0"
+      ) {
+        throw new Error("Move already submitted");
       }
       if (
         gameBefore.player2.toLowerCase() === currentPlayer?.toLowerCase() &&
         gameBefore.move2.toString() !== "0"
       ) {
-        console.error("Cannot submit move: Player 2 already submitted a move");
-        setGameStatus("Error: Move already submitted");
-        return;
+        throw new Error("Move already submitted");
       }
-
       const tx = await contract.makeMove(gameId, move, { gasLimit: 200000 });
-      console.log("Transaction sent:", tx.hash);
       await tx.wait();
-      console.log("Transaction confirmed");
-    } catch (error) {
-      console.error("Error submitting move:", error);
-      setGameStatus("Error submitting move");
+      setErrorMessage("");
+    } catch (error: Error | unknown) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to submit move");
     }
   };
 
   const refreshGameStatus = async () => {
-    if (!contract || !gameId) return;
+    if (!contract) {
+      setErrorMessage("Contract not initialized");
+      return;
+    }
+    if (!gameId) {
+      setErrorMessage("Please enter a Game ID");
+      return;
+    }
     try {
       const game: Game = await contract.getGame(gameId);
       const statusMap = ["Pending", "MovesSubmitted", "Resolved"];
       setGameStatus(statusMap[game.state]);
       setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
-    } catch (error) {
-      console.error("Error refreshing game status:", error);
+      setErrorMessage("");
+    } catch (error: Error | unknown) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to refresh game status");
     }
   };
 
@@ -294,28 +327,43 @@ export default function Home(): JSX.Element {
 
   return (
     <div className="p-4 max-w-md mx-auto">
-      <h1 className="text-2xl font-bold">Rock Paper Scissors</h1>
+      <h1 className="text-2xl font-bold mb-4">Rock Paper Scissors</h1>
       <p>Contract: {contract ? "Connected" : "Loading..."}</p>
-      <button className="mt-4 bg-blue-500 text-white p-2 rounded" onClick={createGame}>
+      {currentPlayer ? (
+        <p className="text-sm mb-2">
+          Player: {currentPlayer.slice(0, 6)}...{currentPlayer.slice(-4)}
+        </p>
+      ) : (
+        <p className="text-sm mb-2">Connecting wallet...</p>
+      )}
+      <button
+        className="mt-2 bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
+        onClick={createGame}
+      >
         Create Game (0.0000001 AVAX)
       </button>
       {gameId && (
         <>
-          <p>Game ID: {gameId}</p>
-          <p>Game Status: {gameStatus || "Loading..."}</p>
-          <p>{player2Joined ? "Both players joined" : "Waiting for Player 2"}</p>
+          <p className="mt-2">Game ID: {gameId}</p>
+          <p className="mt-2">Game Status: {gameStatus || "Loading..."}</p>
+          <p className="mt-2">
+            {player2Joined ? "Both players joined" : "Waiting for Player 2"}
+          </p>
           <button
-            className="mt-2 bg-yellow-500 text-white p-2 rounded"
+            className="mt-2 bg-yellow-500 text-white p-2 rounded hover:bg-yellow-600"
             onClick={refreshGameStatus}
           >
             Refresh Game Status
           </button>
           {gameResult && gameStatus === "Resolved" && (
-            <div className="mt-4">
+            <div className="mt-4 p-4 border rounded">
               <p>
-                Result: {gameResult.winner === ethers.ZeroAddress
+                Result:{" "}
+                {gameResult.winner === ethers.ZeroAddress
                   ? "Tie"
-                  : `Winner: ${gameResult.winner}${isWinner() ? " (You)" : ""}`}
+                  : `Winner: ${gameResult.winner.slice(0, 6)}...${
+                      isWinner() ? " (You)" : ""
+                    }`}
               </p>
               {gameResult.winner !== ethers.ZeroAddress && (
                 <p>Payout: {isWinner() ? `${gameResult.payout} AVAX` : "None"}</p>
@@ -324,29 +372,41 @@ export default function Home(): JSX.Element {
               <p>Player 2 Move: {moveToString(gameResult.player2Move)}</p>
             </div>
           )}
-          <input
-            type="number"
-            placeholder="Enter Game ID"
-            onChange={(e) => setGameId(e.target.value)}
-            className="mt-2 p-2 border rounded w-full"
-          />
-          <button className="mt-2 bg-green-500 text-white p-2 rounded" onClick={joinGame}>
-            Join Game (0.0000001 AVAX)
-          </button>
-          <select
-            value={move}
-            onChange={(e) => setMove(e.target.value)}
-            className="mt-2 p-2 border rounded w-full"
-          >
-            <option value="">Select Move</option>
-            <option value="1">Rock</option>
-            <option value="2">Paper</option>
-            <option value="3">Scissors</option>
-          </select>
-          <button className="mt-2 bg-purple-500 text-white p-2 rounded" onClick={submitMove}>
-            Submit Move
-          </button>
         </>
+      )}
+      <input
+        type="text"
+        placeholder="Enter Game ID"
+        value={gameId || ""}
+        onChange={(e) => setGameId(e.target.value || null)}
+        className="mt-4 p-2 border rounded w-full"
+      />
+      <button
+        className="mt-2 bg-green-500 text-white p-2 rounded hover:bg-green-600"
+        onClick={joinGame}
+      >
+        Join Game (0.0000001 AVAX)
+      </button>
+      <select
+        value={move}
+        onChange={(e) => setMove(e.target.value)}
+        className="mt-2 p-2 border rounded w-full"
+      >
+        <option value="">Select Move</option>
+        <option value="1">Rock</option>
+        <option value="2">Paper</option>
+        <option value="3">Scissors</option>
+      </select>
+      <button
+        className="mt-2 bg-purple-500 text-white p-2 rounded hover:bg-purple-600"
+        onClick={submitMove}
+      >
+        Submit Move
+      </button>
+      {errorMessage && (
+        <p className="mt-4 p-2 bg-red-100 text-red-700 border border-red-300 rounded">
+          Error: {errorMessage}
+        </p>
       )}
     </div>
   );

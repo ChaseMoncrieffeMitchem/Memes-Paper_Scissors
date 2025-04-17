@@ -34,6 +34,7 @@ export default function GameClient(): JSX.Element {
   const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [isPlayer1, setIsPlayer1] = useState<boolean>(false);
   const { getContract } = useContract();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -48,58 +49,77 @@ export default function GameClient(): JSX.Element {
         const signer = await provider.getSigner();
         const address = await signer.getAddress();
         setCurrentPlayer(address);
+        console.log("Contract initialized, player:", address);
         setErrorMessage("");
       } catch (error: unknown) {
-        setErrorMessage(error instanceof Error ? error.message : "Failed to connect wallet");
+        const errMsg = error instanceof Error ? error.message : "Failed to connect wallet";
+        console.error("initContract error:", errMsg);
+        setErrorMessage(errMsg);
       }
     };
     initContract();
 
-    const newSocket = io(process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001", {
-      autoConnect: true,
-    });
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    console.log(`Attempting Socket.IO connection to ${socketUrl}`);
+    const newSocket = io(socketUrl, { autoConnect: true });
     setSocket(newSocket);
 
     newSocket.on("connect", () => {
-      console.log("Socket.IO connected");
+      console.log("Socket.IO connected, ID:", newSocket.id);
       setErrorMessage("");
     });
 
-    newSocket.on("connect_error", () => {
-      setErrorMessage("Socket.IO connection failed");
+    newSocket.on("connect_error", (err) => {
+      console.error("Socket.IO connect error:", err.message);
+      setErrorMessage(`Socket.IO connection failed: ${err.message}`);
+    });
+
+    newSocket.on("connect_timeout", () => {
+      console.error("Socket.IO connect timeout");
+      setErrorMessage("Socket.IO connection timed out");
     });
 
     const gameIdFromUrl = searchParams.get("gameId");
     const initialLiveUpdate = searchParams.get("liveUpdate");
     if (gameIdFromUrl) {
       setGameId(gameIdFromUrl);
+      console.log(`Joining game room: ${gameIdFromUrl}`);
       newSocket.emit("joinGame", gameIdFromUrl);
       if (initialLiveUpdate) {
         setLiveUpdate(decodeURIComponent(initialLiveUpdate));
+        console.log("Set initial liveUpdate from URL:", initialLiveUpdate);
       }
     }
 
     return () => {
+      console.log("Disconnecting Socket.IO");
       newSocket.disconnect();
     };
   }, [getContract, searchParams]);
 
   useEffect(() => {
-    if (!contract || !gameId || !socket || !currentPlayer) return;
-
+    if (!contract || !gameId || !socket || !currentPlayer) {
+      console.log("Skipping fetchGameState, missing:", { contract, gameId, socket, currentPlayer });
+      return;
+    }
+  
     const fetchGameState = async () => {
       try {
         console.log(`Fetching game state for gameId: ${gameId}`);
         const game: Game = await contract.getGame(gameId);
-        console.log("Game state:", game);
+        console.log("Game state received:", game);
         setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
-
+  
+        const isPlayer1Check = currentPlayer.toLowerCase() === game.player1.toLowerCase();
+        setIsPlayer1(isPlayer1Check);
+        console.log(`isPlayer1: ${isPlayer1Check}`);
+  
         let status = "";
-        const isPlayer1 = currentPlayer.toLowerCase() === game.player1.toLowerCase();
         const isPlayer2 = currentPlayer.toLowerCase() === game.player2.toLowerCase();
-
-        if (game.state === 0) {
-          if (isPlayer1) {
+  
+        const state = Number(game.state); // Convert BigInt to number
+        if (state === 0) {
+          if (isPlayer1Check) {
             if (game.move1 === 0) {
               status = "Waiting for your move submission";
             } else {
@@ -114,18 +134,19 @@ export default function GameClient(): JSX.Element {
           } else {
             status = "Game started, join to play";
           }
-        } else if (game.state === 1) {
+        } else if (state === 1) {
           status = "All moves submitted, awaiting resolution";
-        } else if (game.state === 2) {
+        } else if (state === 2) {
           status = "Game resolved";
+          setLiveUpdate("Game Resolved"); // Sync liveUpdate with resolution
           const player1Move = Number(game.move1);
           const player2Move = Number(game.move2);
           let winner = ethers.ZeroAddress;
           if (player1Move !== player2Move) {
             if (
               (player1Move === 1 && player2Move === 3) ||
-              (player1Move === 2 && player2Move == 1) ||
-              (player1Move === 3 && player2Move == 2)
+              (player1Move === 2 && player2Move === 1) ||
+              (player1Move === 3 && player2Move === 2)
             ) {
               winner = game.player1;
             } else {
@@ -135,79 +156,92 @@ export default function GameClient(): JSX.Element {
           const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
           setGameResult({ winner, payout, player1Move, player2Move });
         } else {
-          console.warn(`Unexpected game state: ${game.state}`);
-          status = "Unknown state";
+          console.warn(`Unexpected game state: ${state}`);
+          status = "Unknown state, please refresh";
         }
-
+  
+        console.log(`Setting gameStatus: ${status}`);
         setGameStatus(status);
-
-        if (!liveUpdate && !isPlayer1 && !isPlayer2) {
-          if (game.player1 !== ethers.ZeroAddress) {
-            setLiveUpdate(
-              game.move1 !== 0
-                ? "Player 1 is in this game, waiting for you to join"
-                : "Waiting for Player 1's move"
-            );
-          }
-        }
-
         setErrorMessage("");
       } catch (error: unknown) {
-        console.error("fetchGameState error:", error);
-        setErrorMessage(error instanceof Error ? error.message : "Failed to fetch game state");
+        const errMsg = error instanceof Error ? error.message : "Failed to fetch game state";
+        console.error("fetchGameState error:", errMsg);
+        setErrorMessage(errMsg);
       }
     };
-
+  
     fetchGameState();
-
+  
     const handleMovesSubmitted = (eventGameId: bigint) => {
       console.log(`MovesSubmitted event for gameId: ${eventGameId}`);
       if (eventGameId.toString() === gameId) fetchGameState();
     };
-
+  
     const handleGameResolved = (eventGameId: bigint) => {
       console.log(`GameResolved event for gameId: ${eventGameId}`);
       if (eventGameId.toString() === gameId) fetchGameState();
     };
-
+  
     contract.on("MovesSubmitted", handleMovesSubmitted);
     contract.on("GameResolved", handleGameResolved);
-
+  
     socket.on("gameUpdate", (data) => {
+      console.log(`Received gameUpdate:`, data);
       if (data.gameId === gameId) {
         if (data.action === "joined") {
           setPlayer2Joined(true);
-          setLiveUpdate(
-            currentPlayer.toLowerCase() === data.playerAddress?.toLowerCase()
-              ? "Both players in game, waiting for Player 2 move submission"
-              : "Player 2 has joined game, waiting for Player 2 move submission"
-          );
+          const update = currentPlayer.toLowerCase() === data.playerAddress?.toLowerCase()
+            ? "Both players in game, waiting for Player 2 move submission"
+            : "Player 2 has joined game, waiting for Player 2 move submission";
+          console.log(`Setting liveUpdate: ${update}`);
+          setLiveUpdate(update);
         } else if (data.action === "move1Submitted") {
-          setLiveUpdate(
-            currentPlayer.toLowerCase() === data.playerAddress?.toLowerCase()
-              ? "Player 1 move submitted, waiting for Player 2 to join the game"
-              : "Player 1 is in this game, waiting for you to join"
-          );
+          const update = currentPlayer.toLowerCase() === data.playerAddress?.toLowerCase()
+            ? "Player 1 move submitted, waiting for Player 2 to join the game"
+            : "Player 1 is in this game, waiting for you to join";
+          console.log(`Setting liveUpdate: ${update}`);
+          setLiveUpdate(update);
         } else if (data.action === "move2Submitted") {
+          console.log(`Setting liveUpdate: Both players have submitted...`);
           setLiveUpdate("Both players have submitted their moves, waiting for game resolution");
         }
       }
     });
-
+  
+    socket.on("checkGameStatus", (response: { player1Exists: boolean; move1Submitted: boolean }) => {
+      console.log(`Received checkGameStatus:`, response);
+      if (response.player1Exists) {
+        const update = response.move1Submitted
+          ? "Player 1 is in this game, waiting for you to join"
+          : "Waiting for Player 1's move";
+        console.log(`Setting liveUpdate from checkGameStatus: ${update}`);
+        setLiveUpdate(update);
+      }
+    });
+  
     socket.on("error", ({ message }) => {
+      console.error("Socket.IO error:", message);
       setErrorMessage(message || "Socket.IO error");
     });
-
-    const interval = setInterval(fetchGameState, 5000);
-
+  
+    console.log(`Emitting checkGameStatus for gameId: ${gameId}`);
+    socket.emit("checkGameStatus", gameId);
+  
+    const interval = setInterval(() => {
+      console.log(`Polling fetchGameState for gameId: ${gameId}`);
+      fetchGameState();
+    }, 5000);
+  
     return () => {
+      console.log("Cleaning up listeners");
       contract.off("MovesSubmitted", handleMovesSubmitted);
       contract.off("GameResolved", handleGameResolved);
       socket.off("gameUpdate");
+      socket.off("checkGameStatus");
       socket.off("error");
       clearInterval(interval);
     };
-  }, [contract, gameId, socket, currentPlayer, liveUpdate]);
+  }, [contract, gameId, socket, currentPlayer]);
 
   const joinGame = async () => {
     if (!contract) {
@@ -229,13 +263,15 @@ export default function GameClient(): JSX.Element {
         gasLimit: 200000,
       });
       await tx.wait();
+      console.log(`Emitting gameUpdate: joined, gameId: ${gameId}`);
       socket.emit("gameUpdate", { gameId, action: "joined", playerAddress: currentPlayer });
       setPlayer2Joined(true);
       setLiveUpdate("Both players in game, waiting for Player 2 move submission");
       setErrorMessage("");
     } catch (error: unknown) {
-      console.error("joinGame error:", error);
-      setErrorMessage(error instanceof Error ? error.message : "Failed to join game");
+      const errMsg = error instanceof Error ? error.message : "Failed to join game";
+      console.error("joinGame error:", errMsg);
+      setErrorMessage(errMsg);
     }
   };
 
@@ -285,38 +321,18 @@ export default function GameClient(): JSX.Element {
       const action = gameBefore.player1.toLowerCase() === currentPlayer?.toLowerCase()
         ? "move1Submitted"
         : "move2Submitted";
+      console.log(`Emitting gameUpdate: ${action}, gameId: ${gameId}`);
       socket.emit("gameUpdate", { gameId, action, playerAddress: currentPlayer });
-      setLiveUpdate(
-        action === "move1Submitted"
-          ? "Player 1 move submitted, waiting for Player 2 to join the game"
-          : "Both players have submitted their moves, waiting for game resolution"
-      );
+      const update = action === "move1Submitted"
+        ? "Player 1 move submitted, waiting for Player 2 to join the game"
+        : "Both players have submitted their moves, waiting for game resolution";
+      console.log(`Setting liveUpdate: ${update}`);
+      setLiveUpdate(update);
       setErrorMessage("");
     } catch (error: unknown) {
-      console.error("submitMove error:", error);
-      setErrorMessage(error instanceof Error ? error.message : "Failed to submit move");
-    }
-  };
-
-  const resolveGameManually = async () => {
-    if (!contract) {
-      setErrorMessage("Contract not initialized");
-      return;
-    }
-    if (!gameId) {
-      setErrorMessage("Please enter a Game ID");
-      return;
-    }
-    try {
-      console.log(`Manually resolving game ${gameId}`);
-      const tx = await contract.fulfillRandomWords(gameId, [Math.floor(Math.random() * 1000)], {
-        gasLimit: 200000,
-      });
-      await tx.wait();
-      setErrorMessage("");
-    } catch (error: unknown) {
-      console.error("resolveGameManually error:", error);
-      setErrorMessage(error instanceof Error ? error.message : "Failed to resolve game");
+      const errMsg = error instanceof Error ? error.message : "Failed to submit move";
+      console.error("submitMove error:", errMsg);
+      setErrorMessage(errMsg);
     }
   };
 
@@ -332,12 +348,16 @@ export default function GameClient(): JSX.Element {
     try {
       console.log(`Refreshing game status for gameId: ${gameId}`);
       const game: Game = await contract.getGame(gameId);
+      console.log("Refresh game state:", game);
       let status = "";
-      const isPlayer1 = currentPlayer?.toLowerCase() === game.player1.toLowerCase();
+      const isPlayer1Check = currentPlayer?.toLowerCase() === game.player1.toLowerCase();
+      setIsPlayer1(isPlayer1Check);
+      console.log(`isPlayer1: ${isPlayer1Check}`);
       const isPlayer2 = currentPlayer?.toLowerCase() === game.player2.toLowerCase();
 
-      if (game.state === 0) {
-        if (isPlayer1) {
+      const state = Number(game.state);
+      if (state === 0) {
+        if (isPlayer1Check) {
           if (game.move1 === 0) {
             status = "Waiting for your move submission";
           } else {
@@ -352,9 +372,9 @@ export default function GameClient(): JSX.Element {
         } else {
           status = "Game started, join to play";
         }
-      } else if (game.state === 1) {
+      } else if (state === 1) {
         status = "All moves submitted, awaiting resolution";
-      } else if (game.state === 2) {
+      } else if (state === 2) {
         status = "Game resolved";
         const player1Move = Number(game.move1);
         const player2Move = Number(game.move2);
@@ -362,8 +382,8 @@ export default function GameClient(): JSX.Element {
         if (player1Move !== player2Move) {
           if (
             (player1Move === 1 && player2Move === 3) ||
-            (player1Move === 2 && player2Move == 1) ||
-            (player1Move === 3 && player2Move == 2)
+            (player1Move === 2 && player2Move === 1) ||
+            (player1Move === 3 && player2Move === 2)
           ) {
             winner = game.player1;
           } else {
@@ -372,13 +392,18 @@ export default function GameClient(): JSX.Element {
         }
         const payout = winner === ethers.ZeroAddress ? "0" : "0.0000002";
         setGameResult({ winner, payout, player1Move, player2Move });
+      } else {
+        console.warn(`Unexpected game state on refresh: ${state}`);
+        status = "Unknown state, please refresh";
       }
+      console.log(`Setting gameStatus on refresh: ${status}`);
       setGameStatus(status);
       setPlayer2Joined(game.player2 !== ethers.ZeroAddress);
       setErrorMessage("");
     } catch (error: unknown) {
-      console.error("refreshGameStatus error:", error);
-      setErrorMessage(error instanceof Error ? error.message : "Failed to refresh game status");
+      const errMsg = error instanceof Error ? error.message : "Failed to refresh game status";
+      console.error("refreshGameStatus error:", errMsg);
+      setErrorMessage(errMsg);
     }
   };
 
@@ -406,9 +431,6 @@ export default function GameClient(): JSX.Element {
       <Link href="/" className="text-blue-500 hover:underline mb-4 block">
         Back to Home
       </Link>
-      <Link href="/guide.md" className="text-blue-500 hover:underline mb-4 block">
-        How to Play
-      </Link>
       <input
         type="text"
         placeholder="Enter Game ID"
@@ -417,6 +439,7 @@ export default function GameClient(): JSX.Element {
           const newGameId = e.target.value || null;
           setGameId(newGameId);
           if (newGameId && socket) {
+            console.log(`Emitting joinGame: ${newGameId}`);
             socket.emit("joinGame", newGameId);
             router.push(`/game?gameId=${newGameId}`);
           } else {
@@ -426,14 +449,16 @@ export default function GameClient(): JSX.Element {
         }}
         className="mt-2 p-2 border rounded w-full"
       />
-      <button
-        className="mt-2 bg-green-500 text-white p-2 rounded hover:bg-green-600"
-        onClick={joinGame}
-      >
-        Join Game (0.0000001 AVAX)
-      </button>
       {gameId && (
         <>
+          {!isPlayer1 && (
+            <button
+              className="mt-2 bg-green-500 text-white p-2 rounded hover:bg-green-600"
+              onClick={joinGame}
+            >
+              Join Game (0.0000001 AVAX)
+            </button>
+          )}
           <p className="mt-2">Game ID: {gameId}</p>
           <p className="mt-2">Game Status: {gameStatus || "Loading..."}</p>
           <p className="mt-2 text-green-600 italic">
@@ -445,15 +470,9 @@ export default function GameClient(): JSX.Element {
           >
             Refresh Game Status
           </button>
-          <button
-            className="mt-2 bg-red-500 text-white p-2 rounded hover:bg-red-600"
-            onClick={resolveGameManually}
-          >
-            Resolve Game (Test)
-          </button>
           {gameStatus === "All moves submitted, awaiting resolution" && (
             <p className="mt-2 text-yellow-600">
-              Resolution may take a moment. Try refreshing or resolving manually.
+              Resolution may take a moment. Try refreshing.
             </p>
           )}
           {gameResult && gameStatus === "Game resolved" && (

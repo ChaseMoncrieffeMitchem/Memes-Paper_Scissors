@@ -1,7 +1,3 @@
-
-
-
-
 "use client";
 import { useContract } from "../../../hooks/useContract";
 import { JSX, useEffect, useState } from "react";
@@ -64,24 +60,26 @@ export default function GameClient(): JSX.Element {
     initContract();
 
     const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
-    console.log(`Attempting Socket.IO connection to ${socketUrl}`);
-    const newSocket = io(socketUrl, { autoConnect: true });
-    setSocket(newSocket);
+console.log(`Attempting Socket.IO connection to ${socketUrl}`);
+const newSocket = io(socketUrl, {
+  transports: ["websocket", "polling"], // Prefer WebSocket, fallback to polling
+  autoConnect: true,
+});
+setSocket(newSocket);
 
-    newSocket.on("connect", () => {
-      console.log("Socket.IO connected, ID:", newSocket.id);
-      setErrorMessage("");
-    });
+newSocket.on("connect", () => {
+  console.log("Socket.IO connected, ID:", newSocket.id);
+});
 
-    newSocket.on("connect_error", (err) => {
-      console.error("Socket.IO connect error:", err.message);
-      setErrorMessage(`Socket.IO connection failed: ${err.message}`);
-    });
+newSocket.on("connect_error", (err) => {
+  console.error("Socket.IO connect error:", err.message);
+  setErrorMessage(`Socket.IO connection failed: ${err.message}`);
+});
 
-    newSocket.on("connect_timeout", () => {
-      console.error("Socket.IO connect timeout");
-      setErrorMessage("Socket.IO connection timed out");
-    });
+newSocket.on("error", (error) => {
+  console.error("Socket.IO error:", error.message);
+  setErrorMessage(`Socket.IO error: ${error.message}`);
+});
 
     const gameIdFromUrl = searchParams.get("gameId");
     const initialLiveUpdate = searchParams.get("liveUpdate");

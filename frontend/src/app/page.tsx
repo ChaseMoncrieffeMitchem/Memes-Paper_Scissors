@@ -332,7 +332,7 @@ export default function Home(): JSX.Element {
         const address = await signer.getAddress();
         setCurrentPlayer(address);
         setErrorMessage("");
-      } catch (error: Error | unknown) {
+      } catch (error: unknown) {
         setErrorMessage(error instanceof Error ? error.message : "Failed to connect wallet");
       }
     };
@@ -356,9 +356,11 @@ export default function Home(): JSX.Element {
       if (!gameCreatedEvent) throw new Error("GameCreated event not found");
       const newGameId = gameCreatedEvent.args[0].toString();
       setErrorMessage("");
-      router.push(`/game?gameId=${newGameId}`);
-    } catch (error: Error | unknown) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to create game");
+      // Pass initial liveUpdate via query param
+      router.push(`/game?gameId=${newGameId}&liveUpdate=Waiting%20for%20your%20move%20submission`);
+    } catch (error: unknown) {
+      const ethersError = error as { reason?: string };
+      setErrorMessage(error instanceof Error ? ethersError.reason || error.message : "Failed to create game");
     }
   };
 
